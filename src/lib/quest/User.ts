@@ -332,12 +332,26 @@ export class User extends EventEmitter {
                 this.avatarDecorationRawBuffer = decorationBuffer;
                 Logger.info(`Successfully loaded decoration (${decorationBuffer.length} bytes)`);
 
+                if (!this.rawAvatarBuffer) {
+                    Logger.info(`User ${this.id}: rawAvatarBuffer not ready, loading avatar before compositing`);
+                    await this.loadUserAvatar();
+                }
+
                 if (this.rawAvatarBuffer) {
                     this.avatarFrameBuffer = await this.createFinalAvatarImageSimple(this.rawAvatarBuffer, decorationBuffer);
                     Logger.info(`User ${this.id}: Avatar frame created successfully with profile decoration`);
+                } else {
+                    Logger.error(`User ${this.id}: Avatar buffer still null after loading, cannot create frame`);
                 }
             } else {
                 Logger.info(`No decoration found in profile`);
+                if (!this.rawAvatarBuffer) {
+                    await this.loadUserAvatar();
+                }
+                if (this.rawAvatarBuffer) {
+                    this.avatarFrameBuffer = await this.createCircularAvatar(this.rawAvatarBuffer);
+                    Logger.info(`User ${this.id}: Circular avatar created (no decoration)`);
+                }
             }
         } catch (err) {
             Logger.error(`Failed to load user profile:`, err);
@@ -353,7 +367,8 @@ export class User extends EventEmitter {
             if (this.avatarDecorationRawBuffer && this.rawAvatarBuffer) {
                 this.avatarFrameBuffer = await this.createFinalAvatarImageSimple(this.rawAvatarBuffer, this.avatarDecorationRawBuffer);
             } else if (this.rawAvatarBuffer) {
-                this.avatarFrameBuffer = this.rawAvatarBuffer;
+                this.avatarFrameBuffer = await this.createCircularAvatar(this.rawAvatarBuffer);
+                Logger.info(`User ${this.id}: Circular avatar created in refreshAvatarFrame (no decoration)`);
             }
         } catch (err) {
             Logger.error(`Failed to refresh avatar frame:`, err);
@@ -407,10 +422,85 @@ export class User extends EventEmitter {
     }
 
     /**
-     * طريقة بسيطة لدمج الأفاتار مع الزخرفة
-     * 1. قص الأفاتار بشكل دائري
-     * 2. وضعه في الخلفية
-     * 3. وضع الزخرفة في المقدمة
+     * Apply smart masking to decoration - removes very dark backgrounds while preserving decoration
+     * Uses brightness thresholding to remove dark pixels and enhance remaining ones
+     */
+    private async applySmartMask(decorationBuffer: Buffer, size: number): Promise<Buffer> {
+        try {
+            Logger.info(`Applying smart mask to decoration (size: ${size}x${size})`);
+            
+            const { data, info } = await sharp(decorationBuffer)
+                .resize(size, size, { fit: "contain" })
+                .ensureAlpha()
+                .raw()
+                .toBuffer({ resolveWithObject: true });
+
+            const output = Buffer.from(data);
+            let darkPixelsRemoved = 0;
+            let totalPixels = info.width * info.height;
+
+            for (let i = 0; i < totalPixels; i++) {
+                const r = data[i * 4];
+                const g = data[i * 4 + 1];
+                const b = data[i * 4 + 2];
+
+                // Calculate brightness
+                const brightness = (r + g + b) / 3;
+
+                // Remove only dark background pixels
+                if (brightness < 40) {
+                    output[i * 4 + 3] = 0; // Transparent
+                    darkPixelsRemoved++;
+                } else {
+                    // Enhance brightness for decoration pixels
+                    output[i * 4 + 3] = Math.min(255, brightness * 1.2);
+                }
+            }
+
+            Logger.info(`Smart mask applied: removed ${darkPixelsRemoved}/${totalPixels} dark pixels (${((darkPixelsRemoved / totalPixels) * 100).toFixed(1)}%)`);
+
+            return sharp(output, {
+                raw: {
+                    width: info.width,
+                    height: info.height,
+                    channels: 4
+                }
+            }).png().toBuffer();
+            
+        } catch (err) {
+            Logger.error("applySmartMask failed:", err);
+            return decorationBuffer; // Return original on error
+        }
+    }
+
+    /**
+     * Convert avatar to circular shape
+     */
+    private async createCircularAvatar(avatarBuffer: Buffer): Promise<Buffer> {
+        const size = 512;
+        try {
+            const circleSvg = Buffer.from(`
+                <svg width="${size}" height="${size}">
+                    <circle cx="${size/2}" cy="${size/2}" r="${size/2}" fill="white"/>
+                </svg>
+            `);
+
+            return await sharp(avatarBuffer)
+                .resize(size, size, { fit: "cover", position: "attention" })
+                .composite([{ input: circleSvg, blend: "dest-in" }])
+                .png()
+                .toBuffer();
+        } catch (err) {
+            Logger.error("createCircularAvatar failed:", err);
+            return avatarBuffer;
+        }
+    }
+
+    /**
+     * Create final avatar image with smart masking
+     * 1. Crop avatar to circle
+     * 2. Apply smart mask to decoration (removes dark backgrounds)
+     * 3. Composite avatar (background) + masked decoration (foreground)
      */
     private async createFinalAvatarImageSimple(
         avatarBuffer: Buffer,
@@ -419,9 +509,9 @@ export class User extends EventEmitter {
         const size = 512;
 
         try {
-            Logger.info(`Creating final avatar image with decoration (simple method)`);
+            Logger.info(`Creating final avatar image with smart mask decoration`);
             
-            // 1️⃣ قص الأفاتار بشكل دائري
+            // 1️⃣ Create circular avatar
             const circleSvg = Buffer.from(`
                 <svg width="${size}" height="${size}">
                     <circle cx="${size/2}" cy="${size/2}" r="${size/2}" fill="white"/>
@@ -437,8 +527,11 @@ export class User extends EventEmitter {
                 .png()
                 .toBuffer();
 
-            // 2️⃣ تجهيز الزخرفة بنفس الحجم
-            const decoration = await sharp(decorationBuffer)
+            // 2️⃣ Apply smart mask to decoration
+            const maskedDecoration = await this.applySmartMask(decorationBuffer, size);
+            
+            // 3️⃣ Ensure decoration is properly sized
+            const decoration = await sharp(maskedDecoration)
                 .resize(size, size, {
                     fit: "contain",
                     background: { r: 0, g: 0, b: 0, alpha: 0 }
@@ -446,7 +539,7 @@ export class User extends EventEmitter {
                 .png()
                 .toBuffer();
 
-            // 3️⃣ دمج الصور: الأفاتار في الخلف، الزخرفة في المقدمة
+            // 4️⃣ Composite: avatar background + decoration foreground
             const result = await sharp({
                 create: {
                     width: size,
@@ -456,18 +549,21 @@ export class User extends EventEmitter {
                 }
             })
             .composite([
-                { input: circularAvatar, blend: "over" },     // الأفاتار في الخلف
-                { input: decoration, blend: "over" }          // الزخرفة في المقدمة
+                { input: circularAvatar, blend: "over" },     // Avatar in background
+                { input: decoration, blend: "over" }          // Masked decoration in foreground
             ])
             .png()
             .toBuffer();
 
-            Logger.info(`Simple avatar decoration created successfully`);
+            Logger.info(`Smart mask avatar decoration created successfully`);
             return result;
 
         } catch (err) {
-            Logger.error("Simple avatar decoration failed:", err);
-            return avatarBuffer;
+            Logger.error("Smart mask avatar decoration failed:", err);
+            // Fallback to circular avatar only
+            return this.rawAvatarBuffer 
+                ? await this.createCircularAvatar(this.rawAvatarBuffer)
+                : avatarBuffer;
         }
     }
 
@@ -492,19 +588,18 @@ export class User extends EventEmitter {
                 return null;
             }
 
-            const isDecorationReward = reward.type === RewardType.DiscordDecorations || reward.type === 4;
-            
-            if (!isDecorationReward) {
-                Logger.info(`User ${this.id}: reward type is ${reward.type}, not a decoration reward, skipping decoration composite`);
+            // Only type 3 (DiscordDecorations) is a real avatar decoration
+            if (reward.type !== RewardType.DiscordDecorations) {
+                Logger.info(`User ${this.id}: reward type ${reward.type} is not an avatar decoration, skipping`);
                 return null;
             }
 
-            Logger.info(`User ${this.id}: Reward type ${reward.type} is a decoration reward`);
+            Logger.info(`User ${this.id}: Reward type ${reward.type} is an avatar decoration reward`);
 
             const asset = reward.asset;
             let decorationBuffer: Buffer | null = null;
 
-            // إذا كان هناك asset في المكافأة، استخدمه
+            // First attempt: load decoration from quest asset
             if (asset) {
                 const decorationUrl = asset.startsWith("http")
                     ? asset
@@ -516,76 +611,58 @@ export class User extends EventEmitter {
                 const isVideo = isVideoFile(decorationUrl);
 
                 if (isVideo) {
-                    Logger.info(`User ${this.id}: reward asset is a video (${decorationUrl}), will use quest image instead`);
-                } else {
-                    if (isGif) {
-                        Logger.info(`User ${this.id}: reward asset is a GIF, converting to static PNG for decoration: ${decorationUrl}`);
+                    // Asset is video - try cached PNG from quest.image
+                    const questImage = quest.image;
+                    if (questImage && !isVideoFile(questImage)) {
+                        Logger.info(`User ${this.id}: asset is video, trying cached PNG from quest.image: ${questImage}`);
+                        try {
+                            const resp = await axios.get(questImage, { responseType: "arraybuffer", timeout: 10000 });
+                            const imgBuf = isGifFile(questImage)
+                                ? await this.convertGifToPng(Buffer.from(resp.data))
+                                : Buffer.from(resp.data);
+                            decorationBuffer = await sharp(imgBuf)
+                                .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                                .png().toBuffer();
+                            Logger.info(`User ${this.id}: cached PNG decoration loaded successfully`);
+                        } catch (e) {
+                            Logger.warn(`User ${this.id}: failed to load cached PNG: ${e}`);
+                        }
                     } else {
-                        Logger.info(`User ${this.id}: using quest decoration: ${decorationUrl}`);
+                        Logger.info(`User ${this.id}: asset is video and no cached PNG yet, will show circular avatar`);
                     }
-
-                    const resp = await axios.get(decorationUrl, {
-                        responseType: "arraybuffer",
-                        timeout: 10000
-                    });
-
-                    let imageBuffer = Buffer.from(resp.data);
-                    
-                    if (isGif) {
-                        imageBuffer = await this.convertGifToPng(imageBuffer);
-                    }
-
-                    decorationBuffer = await sharp(imageBuffer)
-                        .resize(512, 512, {
-                            fit: "contain",
-                            background: { r: 0, g: 0, b: 0, alpha: 0 }
-                        })
-                        .png()
-                        .toBuffer();
-                }
-            }
-
-            // إذا لم يكن هناك asset أو كان فيديو، استخدم صورة المهمة كزخرفة بديلة
-            if (!decorationBuffer && quest.image) {
-                Logger.info(`User ${this.id}: No valid decoration asset, using quest image as decoration: ${quest.image}`);
-                
-                const isGif = isGifFile(quest.image);
-                const isVideo = isVideoFile(quest.image);
-
-                if (!isVideo) {
-                    const resp = await axios.get(quest.image, {
-                        responseType: "arraybuffer",
-                        timeout: 10000
-                    });
-
-                    let imageBuffer = Buffer.from(resp.data);
-                    
-                    if (isGif) {
-                        imageBuffer = await this.convertGifToPng(imageBuffer);
-                    }
-
-                    decorationBuffer = await sharp(imageBuffer)
-                        .resize(512, 512, {
-                            fit: "contain",
-                            background: { r: 0, g: 0, b: 0, alpha: 0 }
-                        })
-                        .png()
-                        .toBuffer();
-                    
-                    Logger.info(`User ${this.id}: Successfully loaded quest image as decoration`);
                 } else {
-                    Logger.info(`User ${this.id}: Quest image is a video, cannot use as decoration`);
+                    if (isGif) {
+                        Logger.info(`User ${this.id}: reward asset is a GIF, converting to PNG: ${decorationUrl}`);
+                    } else {
+                        Logger.info(`User ${this.id}: using quest decoration PNG: ${decorationUrl}`);
+                    }
+
+                    const resp = await axios.get(decorationUrl, { responseType: "arraybuffer", timeout: 10000 });
+                    let imageBuffer = Buffer.from(resp.data);
+                    if (isGif) imageBuffer = await this.convertGifToPng(imageBuffer);
+                    decorationBuffer = await sharp(imageBuffer)
+                        .resize(512, 512, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                        .png().toBuffer();
                 }
             }
 
-            if (!decorationBuffer) {
-                Logger.warn(`User ${this.id}: No decoration buffer available, skipping`);
-                return null;
+            // Second attempt: use user's active profile decoration as fallback
+            if (!decorationBuffer && this.avatarDecorationRawBuffer) {
+                Logger.info(`User ${this.id}: using user's profile decoration as fallback`);
+                decorationBuffer = this.avatarDecorationRawBuffer;
             }
 
-            Logger.info(`User ${this.id}: Decoration processed successfully, creating final avatar image with simple method`);
+            // No decoration available - show circular avatar only
+            if (!decorationBuffer) {
+                Logger.info(`User ${this.id}: no decoration available, returning circular avatar`);
+                return this.rawAvatarBuffer
+                    ? await this.createCircularAvatar(this.rawAvatarBuffer)
+                    : null;
+            }
 
-            // استخدام الطريقة البسيطة لدمج الأفاتار مع الزخرفة
+            Logger.info(`User ${this.id}: Decoration processed successfully, creating final avatar image with smart mask`);
+
+            // Use smart mask method to combine avatar with decoration
             const result = await this.createFinalAvatarImageSimple(
                 this.rawAvatarBuffer,
                 decorationBuffer
@@ -614,29 +691,20 @@ export class User extends EventEmitter {
         }
 
         const reward = quest.rewards?.[0];
-        const isDecorationReward = reward?.type === RewardType.DiscordDecorations || reward?.type === 4;
-        
-        if (isDecorationReward) {
-            Logger.info(`User ${this.id}: refreshing decoration for quest with decoration reward (type: ${reward?.type})`);
-            this.questDecorationBuffer = await this.buildQuestDecorationThumbnail(quest);
+        // Only type 3 is avatar decoration - type 4 (DiscordOrb) is not an avatar decoration
+        const isAvatarDecorationReward = reward?.type === RewardType.DiscordDecorations;
 
-            // إذا فشل تحميل الزخرفة، نقوم بتخزين صورة المهمة كصورة عادية
-            if (!this.questDecorationBuffer && quest.image) {
-                try {
-                    Logger.info(`User ${this.id}: storing quest image as fallback: ${quest.image}`);
-                    const resp = await axios.get(quest.image, { 
-                        responseType: "arraybuffer", 
-                        timeout: 10000 
-                    });
-                    this.questRewardImageBuffer = Buffer.from(resp.data);
-                } catch (err) {
-                    Logger.error(`Failed to download quest reward image:`, err);
-                }
-            }
+        if (isAvatarDecorationReward) {
+            Logger.info(`User ${this.id}: refreshing decoration for avatar decoration quest (type: ${reward?.type})`);
+            this.questDecorationBuffer = await this.buildQuestDecorationThumbnail(quest);
+            // Always show avatar for decoration quests (with or without decoration)
+            this.showQuestImageInsteadOfAvatar = false;
+            Logger.info(`User ${this.id}: showQuestImageInsteadOfAvatar=false, questDecorationBuffer=${!!this.questDecorationBuffer}`);
         } else {
-            Logger.info(`User ${this.id}: quest reward type is ${reward?.type}, not a decoration reward, skipping decoration`);
+            Logger.info(`User ${this.id}: quest reward type ${reward?.type} is not avatar decoration — showing quest image`);
             this.questDecorationBuffer = null;
             this.questRewardImageBuffer = null;
+            this.showQuestImageInsteadOfAvatar = true;
         }
     }
 
@@ -765,19 +833,20 @@ export class User extends EventEmitter {
             .setFooter({ text: quest.data?.config?.application?.name || "Discord Quests" })
             .setDescription(description);
 
-        const isDecorationReward = quest.rewards?.[0]?.type === RewardType.DiscordDecorations || quest.rewards?.[0]?.type === 4;
+        // Only type 3 is a real avatar decoration
+        const isAvatarDecorationReward = quest.rewards?.[0]?.type === RewardType.DiscordDecorations;
 
-        // عرض الصورة المناسبة
+        // Display appropriate image
         if (this.showQuestImageInsteadOfAvatar && image) {
             embed.setThumbnail(image);
-            Logger.info(`User ${this.id}: showing quest image instead of avatar: ${image}`);
+            Logger.info(`User ${this.id}: showing quest image as thumbnail: ${image}`);
         } 
-        else if (isDecorationReward && this.questDecorationBuffer) {
+        else if (isAvatarDecorationReward && this.questDecorationBuffer) {
             files.push(new AttachmentBuilder(this.questDecorationBuffer, { name: "avatar_with_decoration.png" }));
             embed.setThumbnail("attachment://avatar_with_decoration.png");
             Logger.info(`User ${this.id}: showing avatar with decoration`);
         } 
-        else if (isDecorationReward && this.questRewardImageBuffer) {
+        else if (isAvatarDecorationReward && this.questRewardImageBuffer) {
             files.push(new AttachmentBuilder(this.questRewardImageBuffer, { name: "quest_reward.png" }));
             embed.setThumbnail("attachment://quest_reward.png");
             Logger.info(`User ${this.id}: showing quest reward image as fallback`);
