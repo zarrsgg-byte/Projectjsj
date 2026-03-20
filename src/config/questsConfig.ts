@@ -23,8 +23,8 @@ export default {
     ],
 
     image: {
-        channelId: "1421221274721456242", // channel where bot will upload images
-        guildId: "1399471603003428966", // server where bot will upload images
+        channelId: "1484325879764226109", // channel where bot will upload images
+        guildId: "1481718193608462497", // server where bot will upload images
     },
     serverId: "1481718193608462497", // Server where the bot operates
     completedQuestsChannel: "1414963290391707779",
@@ -43,12 +43,9 @@ export default {
         {
             url: "https://youtu.be/eJoa4obHhng", // Tutorial or guide
             emoji: (e:CustomClient) => e.getEmoji("youtube",false) ?? "▶️",
+            label: undefined as string | undefined,
         }
-    ],
-
-
-
-
+    ] as Array<{ url: string; emoji: (e: CustomClient) => string; label?: string }>,
 
 
     customRewardsImage: {
@@ -70,7 +67,3 @@ export default {
     
     - ** https://discord.gg/39c2c3jVbN **`
 }
-
-
-
-
