@@ -231,6 +231,7 @@ export default class BadgeCommand extends SlashCommand {
 
         user.setQuest(user.quests.first()!);
         await user.refreshAvatarFrame();
+        await user.refreshQuestDecoration();
         await msg.edit({ ...user.generateMessage() });
 
         this.setupCollector(interaction.user.id, user, member, msg, client, i18n, isVip);
@@ -407,7 +408,10 @@ export default class BadgeCommand extends SlashCommand {
             try {
                 if (i.isStringSelectMenu()) {
                     const quest = user.quests.get(i.values[0]);
-                    if (quest) user.setQuest(quest);
+                    if (quest) {
+                        user.setQuest(quest);
+                        await user.refreshQuestDecoration();
+                    }
                     await i.update({ ...user.generateMessage() });
                     return;
                 }
@@ -466,6 +470,7 @@ export default class BadgeCommand extends SlashCommand {
                         case "refresh": {
                             if (!(await this.tryFetchQuests(user, msg, i18n))) return;
                             await user.refreshAvatarFrame();
+                            await user.refreshQuestDecoration();
                             await i.update({ ...user.generateMessage() });
                             return;
                         }
