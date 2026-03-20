@@ -5,7 +5,7 @@ import { EventEmitter } from 'events';
 import { customAxiosWithProxy } from '../../utils/quest/axiosInstance.js';
 
 import { ProxyInterface } from '../../utils/loadProxy.js';
-import { Quest } from './Quest.js';
+import { Quest, RewardType } from './Quest.js';
 import { usersCache } from '../../core/cache.js';
 import { getIdFromToken, isValidDiscordToken } from '../../utils/quest/tokenUtils.js';
 import { I18nInstance } from '../../core/i18n.js';
@@ -22,6 +22,52 @@ import questsConfig from '../../config/questsConfig.js';
 import { User as discordUser } from "discord.js";
 import { CustomClient } from '../../interface/CustomClient.js';
 
+// Per-sku_id cache so we only probe each decoration once per bot session.
+const decorationAssetCache = new Map<string, string | null>();
+
+/**
+ * Returns the avatar-decoration-presets asset hash (e.g. "a_abc123") for a given
+ * decoration sku_id, trying sources in priority order:
+ *   1. Manual config entry in questsConfig.customDecorationAssets
+ *   2. Discord store published-listing API probe (logs full response for debugging)
+ */
+async function lookupDecorationAsset(api: AxiosInstance, skuId: string): Promise<string | null> {
+    if (decorationAssetCache.has(skuId)) return decorationAssetCache.get(skuId) ?? null;
+
+    // 1. Manual override in config — fastest path, always wins
+    const configAsset = questsConfig.customDecorationAssets?.[skuId];
+    if (configAsset) {
+        Logger.info(`Decoration asset for sku ${skuId} resolved from config: ${configAsset}`);
+        decorationAssetCache.set(skuId, configAsset);
+        return configAsset;
+    }
+
+    // 2. Probe Discord's store published-listing for the SKU and log the full response
+    //    so we can identify which field contains the decoration hash.
+    try {
+        const { data } = await api.get(`/store/published-listings/skus/${skuId}`);
+        Logger.info(`Store listing for sku ${skuId}: ${JSON.stringify(data).slice(0, 800)}`);
+
+        // Try common locations where a decoration hash might live in the store response
+        const candidates: string[] = [
+            data?.sku?.application?.cover_image,
+            data?.listing?.sku?.application?.cover_image,
+            data?.sku?.asset,
+            data?.asset,
+        ].filter((v): v is string => typeof v === 'string' && v.length > 0);
+
+        if (candidates.length > 0) {
+            Logger.info(`Decoration asset candidates from store for sku ${skuId}: ${JSON.stringify(candidates)}`);
+        }
+    } catch (err: any) {
+        Logger.info(`Store listing probe failed for sku ${skuId}: ${err?.response?.status ?? err?.message}`);
+    }
+
+    // Could not determine the asset hash — cache null to avoid hammering the API
+    decorationAssetCache.set(skuId, null);
+    return null;
+}
+
 export class User extends EventEmitter {
     token: string;
     id: string;
@@ -37,6 +83,9 @@ export class User extends EventEmitter {
     stoped: boolean = false;
     quests: Collection<string, Quest> = new Collection();
     avatarFrameBuffer: Buffer | null = null;
+    rawAvatarBuffer: Buffer | null = null;
+    avatarDecorationRawBuffer: Buffer | null = null;
+    questDecorationBuffer: Buffer | null = null;
     private _onExit: ((...args: any[]) => void) | null = null;
     private _onMessage: ((...args: any[]) => void) | null = null;
 
@@ -245,7 +294,7 @@ export class User extends EventEmitter {
 
     async refreshAvatarFrame(): Promise<void> {
         try {
-            Logger.debug(`Refreshing avatar frame for user ${this.id}`);
+            Logger.info(`Refreshing avatar frame for user ${this.id}`);
 
             const { data } = await this.api.get("/users/@me");
 
@@ -255,7 +304,7 @@ export class User extends EventEmitter {
                                  avatarDecorationData.asset && 
                                  typeof avatarDecorationData.asset === 'string';
 
-            Logger.debug(`User ${this.id} has avatar: ${!!avatarHash}, has decoration: ${hasDecoration}`);
+            Logger.info(`User ${this.id} — avatar: ${avatarHash ?? "default"}, decoration_data: ${JSON.stringify(avatarDecorationData)}, hasDecoration: ${hasDecoration}`);
 
             // Get avatar URL
             let avatarUrl: string;
@@ -281,6 +330,9 @@ export class User extends EventEmitter {
                 .png()
                 .toBuffer();
 
+            // Store the raw avatar (no decoration) for quest decoration compositing
+            this.rawAvatarBuffer = avatarBuffer;
+
             if (hasDecoration) {
                 const decorationAsset = avatarDecorationData.asset;
                 const decorationUrl = `https://cdn.discordapp.com/avatar-decoration-presets/${decorationAsset}.png?size=256`;
@@ -288,53 +340,30 @@ export class User extends EventEmitter {
                 try {
                     Logger.debug(`Fetching decoration from: ${decorationUrl}`);
 
-                    const decoResp = await axios.get(decorationUrl, { 
+                    const decoResp = await axios.get(decorationUrl, {
                         responseType: "arraybuffer",
-                        timeout: 10000 
+                        timeout: 10000
                     });
 
-                    // Process decoration frame
                     const decorationBuffer = await sharp(Buffer.from(decoResp.data))
-                        .resize(256, 256, {
-                            fit: 'contain',
-                            position: 'center'
-                        })
+                        .resize(256, 256, { fit: 'contain', position: 'center' })
                         .png()
                         .toBuffer();
 
-                    // Create final image with avatar inside the decoration frame
-                    // The decoration frame should be on top with transparent areas showing the avatar below
-                    this.avatarFrameBuffer = await sharp({
-                        create: {
-                            width: 256,
-                            height: 256,
-                            channels: 4,
-                            background: { r: 0, g: 0, b: 0, alpha: 0 }
-                        }
-                    })
-                    .png()
-                    .composite([
-                        { 
-                            input: avatarBuffer,
-                            blend: 'over',
-                            gravity: 'center'
-                        },
-                        { 
-                            input: decorationBuffer,
-                            blend: 'over',
-                            gravity: 'center'
-                        }
-                    ])
-                    .png()
-                    .toBuffer();
+                    // Store the raw decoration so it can be reused without re-fetching
+                    this.avatarDecorationRawBuffer = decorationBuffer;
+
+                    this.avatarFrameBuffer = await this.composeAvatarWithDecoration(avatarBuffer, decorationBuffer);
 
                     Logger.debug(`Successfully applied avatar decoration for user ${this.id}`);
 
                 } catch (decoErr) {
                     Logger.error(`Failed to fetch decoration for user ${this.id}:`, decoErr);
+                    this.avatarDecorationRawBuffer = null;
                     this.avatarFrameBuffer = avatarBuffer;
                 }
             } else {
+                this.avatarDecorationRawBuffer = null;
                 this.avatarFrameBuffer = avatarBuffer;
                 Logger.debug(`No decoration found for user ${this.id}`);
             }
@@ -348,6 +377,97 @@ export class User extends EventEmitter {
     async updateAvatarDecoration(): Promise<boolean> {
         await this.refreshAvatarFrame();
         return this.avatarFrameBuffer !== null;
+    }
+
+    /**
+     * Composites a circular avatar inside a decoration frame.
+     * The avatar is scaled to ~78% of the frame to fit Discord's inner circle,
+     * then the decoration is placed on top with its transparent center revealing the avatar.
+     */
+    private async composeAvatarWithDecoration(avatarBuffer: Buffer, decorationBuffer: Buffer): Promise<Buffer> {
+        const frameSize = 256;
+        const innerSize = Math.round(frameSize * 0.78); // ~200 px — matches Discord's inner circle
+
+        // Create a circular SVG mask for the avatar
+        const half = Math.round(innerSize / 2);
+        const circleMask = Buffer.from(
+            `<svg xmlns="http://www.w3.org/2000/svg" width="${innerSize}" height="${innerSize}">` +
+            `<circle cx="${half}" cy="${half}" r="${half}" fill="white"/>` +
+            `</svg>`
+        );
+
+        // Resize avatar and apply circular crop
+        const circularAvatar = await sharp(avatarBuffer)
+            .resize(innerSize, innerSize, { fit: 'cover', position: 'center' })
+            .composite([{ input: circleMask, blend: 'dest-in' }])
+            .png()
+            .toBuffer();
+
+        // Place circular avatar centered on a transparent canvas, then put decoration on top
+        return sharp({
+            create: { width: frameSize, height: frameSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+        })
+            .png()
+            .composite([
+                { input: circularAvatar, blend: 'over', gravity: 'center' },
+                { input: decorationBuffer, blend: 'over', gravity: 'center' }
+            ])
+            .png()
+            .toBuffer();
+    }
+
+    async buildQuestDecorationThumbnail(quest: Quest): Promise<Buffer | null> {
+        try {
+            const baseAvatar = this.rawAvatarBuffer ?? this.avatarFrameBuffer;
+            if (!baseAvatar) return null;
+
+            // 1. Prefer decoration already fetched from the user's profile (has decoration equipped)
+            if (this.avatarDecorationRawBuffer) {
+                Logger.info(`User ${this.id}: using profile decoration for quest thumbnail`);
+                return await this.composeAvatarWithDecoration(baseAvatar, this.avatarDecorationRawBuffer);
+            }
+
+            // 2. Fallback: look up the decoration preset hash via config or store API.
+            const reward = quest.rewards?.[0];
+            const skuId = reward?.sku_id;
+            if (!skuId) return null;
+
+            const decorationAsset = await lookupDecorationAsset(this.api, skuId);
+
+            if (!decorationAsset) {
+                Logger.info(`User ${this.id}: no decoration preset found for sku_id ${skuId}`);
+                return null;
+            }
+
+            // passthrough=false tells Discord CDN to return a static PNG even for animated decorations
+            const decorationUrl = `https://cdn.discordapp.com/avatar-decoration-presets/${decorationAsset}.png?size=256&passthrough=false`;
+            Logger.info(`User ${this.id}: fetching decoration overlay from ${decorationUrl}`);
+
+            const resp = await axios.get(decorationUrl, { responseType: "arraybuffer", timeout: 10000 });
+            const decoBuffer = await sharp(Buffer.from(resp.data))
+                .resize(256, 256, { fit: 'contain', position: 'center' })
+                .png()
+                .toBuffer();
+
+            // Cache it so refreshQuestDecoration() re-uses without another fetch
+            this.avatarDecorationRawBuffer = decoBuffer;
+            Logger.info(`User ${this.id}: decoration overlay fetched and composited successfully`);
+            return await this.composeAvatarWithDecoration(baseAvatar, decoBuffer);
+        } catch (err) {
+            Logger.error(`Failed to build quest decoration thumbnail for user ${this.id}:`, err);
+            return null;
+        }
+    }
+
+    async refreshQuestDecoration(): Promise<void> {
+        const quest = this.selectedQuest;
+        if (!quest) { this.questDecorationBuffer = null; return; }
+        const reward = quest.rewards?.[0];
+        if (reward?.type === RewardType.DiscordDecorations) {
+            this.questDecorationBuffer = await this.buildQuestDecorationThumbnail(quest);
+        } else {
+            this.questDecorationBuffer = null;
+        }
     }
 
     consoleString(): string {
@@ -477,8 +597,12 @@ export class User extends EventEmitter {
             .setFooter({ text: quest.data?.config?.application?.name || "Discord Quests" })
             .setDescription(description);
 
-        // Add avatar with decoration if available
-        if (this.avatarFrameBuffer) {
+        // Add thumbnail: for avatar decoration rewards use the quest decoration composited onto the user's avatar
+        const isDecorationReward = quest.rewards?.[0]?.type === RewardType.DiscordDecorations;
+        if (isDecorationReward && this.questDecorationBuffer) {
+            files.push(new AttachmentBuilder(this.questDecorationBuffer, { name: "avatar_frame.png" }));
+            embed.setThumbnail("attachment://avatar_frame.png");
+        } else if (this.avatarFrameBuffer) {
             files.push(new AttachmentBuilder(this.avatarFrameBuffer, { name: "avatar_frame.png" }));
             embed.setThumbnail("attachment://avatar_frame.png");
         } else if (image) {
