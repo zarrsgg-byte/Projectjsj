@@ -49,6 +49,8 @@ export class User extends EventEmitter {
     quests: Collection<string, Quest> = new Collection();
     questDecorationBuffer: Buffer | null = null;
     questImageBuffer: Buffer | null = null;
+    avatarFrameBuffer: Buffer | null = null;
+    avatarWithDecorationBuffer: Buffer | null = null;
     showQuestImage: boolean = true;
     private _onExit: ((...args: any[]) => void) | null = null;
     private _onMessage: ((...args: any[]) => void) | null = null;
@@ -426,6 +428,80 @@ export class User extends EventEmitter {
         }
     }
 
+    async refreshAvatarFrame(): Promise<void> {
+        try {
+            const { data } = await this.api.get('/users/@me');
+            const avatarHash = data?.avatar;
+            if (!avatarHash) {
+                this.avatarFrameBuffer = null;
+                this.avatarWithDecorationBuffer = null;
+                return;
+            }
+            const ext = avatarHash.startsWith('a_') ? 'gif' : 'png';
+            const avatarUrl = `https://cdn.discordapp.com/avatars/${this.id}/${avatarHash}.${ext}?size=512`;
+            const resp = await axios.get(avatarUrl, { responseType: 'arraybuffer', timeout: 10000 });
+            let imgBuf = Buffer.from(resp.data);
+            if (ext === 'gif') imgBuf = await this.convertGifToPng(imgBuf);
+            const size = 512;
+            const circularMask = Buffer.from(
+                `<svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${size / 2}" fill="white"/></svg>`
+            );
+            this.avatarFrameBuffer = await sharp(imgBuf)
+                .resize(size, size, { fit: 'cover' })
+                .composite([{ input: circularMask, blend: 'dest-in' }])
+                .png()
+                .toBuffer();
+            Logger.info(`User ${this.id}: Avatar frame loaded`);
+            await this.buildAvatarWithDecoration();
+        } catch (err) {
+            Logger.error(`User ${this.id}: Failed to load avatar frame:`, err);
+            this.avatarFrameBuffer = null;
+            this.avatarWithDecorationBuffer = null;
+        }
+    }
+
+    async refreshQuestDecoration(): Promise<void> {
+        const quest = this.selectedQuest;
+        if (!quest) {
+            this.questDecorationBuffer = null;
+            this.avatarWithDecorationBuffer = null;
+            return;
+        }
+        const reward = quest.rewards?.[0];
+        const isAvatarDecorationReward = reward?.type === RewardType.DiscordDecorations;
+        if (isAvatarDecorationReward) {
+            this.questDecorationBuffer = await this.loadQuestDecoration(quest);
+            this.showQuestImage = false;
+            await this.buildAvatarWithDecoration();
+        } else {
+            this.questDecorationBuffer = null;
+            this.avatarWithDecorationBuffer = null;
+            this.showQuestImage = true;
+        }
+    }
+
+    private async buildAvatarWithDecoration(): Promise<void> {
+        if (!this.avatarFrameBuffer || !this.questDecorationBuffer) {
+            this.avatarWithDecorationBuffer = null;
+            return;
+        }
+        try {
+            const size = 512;
+            const resizedDecoration = await sharp(this.questDecorationBuffer)
+                .resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                .png()
+                .toBuffer();
+            this.avatarWithDecorationBuffer = await sharp(this.avatarFrameBuffer)
+                .composite([{ input: resizedDecoration, blend: 'over' }])
+                .png()
+                .toBuffer();
+            Logger.info(`User ${this.id}: Avatar+decoration composite built`);
+        } catch (err) {
+            Logger.error(`User ${this.id}: Failed to build avatar+decoration composite:`, err);
+            this.avatarWithDecorationBuffer = null;
+        }
+    }
+
     consoleString(): string {
         let lines: string[] = Array.from(new Set(this.logs.filter(d => d && d.trim().length > 0)));
         lines = lines.map((line: string, i) => `[${i + 1}] ${line}`.trim());
@@ -555,11 +631,14 @@ export class User extends EventEmitter {
         const isAvatarDecorationReward = quest.rewards?.[0]?.type === RewardType.DiscordDecorations;
 
         // Display appropriate thumbnail based on quest type
-        if (isAvatarDecorationReward && this.questDecorationBuffer) {
-            // For decoration quests: show the decoration
-            files.push(new AttachmentBuilder(this.questDecorationBuffer, { name: "avatar_decoration.png" }));
-            embed.setThumbnail("attachment://avatar_decoration.png");
-            Logger.info(`User ${this.id}: showing avatar decoration`);
+        if (isAvatarDecorationReward) {
+            const displayBuffer = this.avatarWithDecorationBuffer || this.questDecorationBuffer;
+            if (displayBuffer) {
+                const fileName = this.avatarWithDecorationBuffer ? "avatar_with_decoration.png" : "avatar_decoration.png";
+                files.push(new AttachmentBuilder(displayBuffer, { name: fileName }));
+                embed.setThumbnail(`attachment://${fileName}`);
+                Logger.info(`User ${this.id}: showing ${fileName}`);
+            }
         }
         else if (this.showQuestImage && this.questImageBuffer) {
             // For regular quests: show the quest image
@@ -708,6 +787,8 @@ export class User extends EventEmitter {
         this.clearProcessListeners();
         this.questDecorationBuffer = null;
         this.questImageBuffer = null;
+        this.avatarFrameBuffer = null;
+        this.avatarWithDecorationBuffer = null;
         this.showQuestImage = true;
     }
 }
