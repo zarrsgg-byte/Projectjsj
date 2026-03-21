@@ -12,8 +12,6 @@ import { SelfUserQuestRunner } from "../../lib/quest/SelfUserQuestRunner.js";
 import { loadFolder } from "../../handler/folderLoader.js";
 import { findClosestIndexFolder } from "../../utils/tools.js";
 import path from "path";
-import sharp from "sharp";
-import axios from "axios";
 
 const token = questsConfig?.notification?.token;
 const isValidToken = token && isValidDiscordToken(token) && getIdFromToken(token) !== null;
@@ -25,9 +23,17 @@ const questConfigs = new Collection<string, QuestConfig>();
 /** Tracks quest IDs currently being completed to avoid duplicate runs */
 const completingQuests = new Set<string>();
 
+interface QuestAssetCache {
+    decoration: Buffer | null;
+    questImage: Buffer | null;
+}
+
 export default class readyEvent extends baseDiscordEvent {
     public name: keyof ClientEvents = "clientReady";
     public once: boolean = true;
+
+    /** Per-quest preloaded buffers: questId → cached assets */
+    private questAssetsCache = new Map<string, QuestAssetCache>();
 
     private async loadQuestConfigs(): Promise<void> {
         if (questConfigs.size > 0) return;
@@ -114,12 +120,50 @@ export default class readyEvent extends baseDiscordEvent {
         return `${"▓".repeat(filled)}${"░".repeat(empty)} ${percent}%`;
     }
 
+    // ── Preloading ────────────────────────────────────────────────────────────
+
     /**
-     * Complete a quest on selfUser by running the QuestConfig directly in the
-     * main process — completely bypasses child process and ChildManager limits.
-     * Automatically retries on failure, resuming from last saved Discord progress.
-     * Logs live progress to console on key events.
+     * Preload decoration and quest image for a single quest in the background.
+     * Skips if already cached.
      */
+    private async preloadQuestAssets(quest: Quest): Promise<void> {
+        if (this.questAssetsCache.has(quest.id)) return;
+        if (!selfUser) return;
+
+        const isDecorationQuest = quest.rewards?.[0]?.type === RewardType.DiscordDecorations;
+
+        const [questImage, decoration] = await Promise.all([
+            selfUser.loadQuestImage(quest).catch(() => null),
+            isDecorationQuest ? selfUser.loadQuestDecoration(quest).catch(() => null) : Promise.resolve(null),
+        ]);
+
+        this.questAssetsCache.set(quest.id, { decoration, questImage });
+        this.logger.info(
+            `Quest ${quest.id}: preloaded — image=${!!questImage}, decoration=${!!decoration}`
+        );
+    }
+
+    /**
+     * Kick off background preloading for every quest in selfUser.quests.
+     * Non-blocking — errors are swallowed per quest.
+     */
+    private preloadAllQuestAssets(): void {
+        if (!selfUser) return;
+        for (const [, quest] of selfUser.quests) {
+            this.preloadQuestAssets(quest).catch(() => null);
+        }
+    }
+
+    /**
+     * Invalidate and re-preload a quest's cached assets (call after completion).
+     */
+    private async refreshQuestCache(quest: Quest): Promise<void> {
+        this.questAssetsCache.delete(quest.id);
+        await this.preloadQuestAssets(quest).catch(() => null);
+    }
+
+    // ── Quest completion ──────────────────────────────────────────────────────
+
     private async completeQuestOnSelfUser(quest: Quest): Promise<boolean> {
         if (!selfUser) return false;
 
@@ -129,9 +173,8 @@ export default class readyEvent extends baseDiscordEvent {
         }
 
         const MAX_RETRIES = 10;
-        const RETRY_DELAY_MS = 3 * 60 * 1000; // 3 minutes between retries
+        const RETRY_DELAY_MS = 3 * 60 * 1000;
 
-        // Find the matching QuestConfig once (task name can't change)
         await selfUser.fetchQuests().catch(() => null);
         const firstQuest = selfUser.quests.get(quest.id) ?? quest;
         const taskName = firstQuest.solveMethod?.id;
@@ -143,23 +186,21 @@ export default class readyEvent extends baseDiscordEvent {
             return false;
         }
 
-        // Add to completingQuests NOW — stays until fully done or retries exhausted
         completingQuests.add(quest.id);
 
         let attempt = 0;
 
         try {
             while (attempt <= MAX_RETRIES) {
-                // Re-fetch latest state from Discord before each attempt
                 await selfUser.fetchQuests().catch(() => null);
                 const latestQuest = selfUser.quests.get(quest.id) ?? quest;
 
                 if (latestQuest.isCompleted()) {
                     this.logger.info(`Quest ${quest.id} already completed on selfUser ✓`);
+                    await this.refreshQuestCache(latestQuest).catch(() => null);
                     return true;
                 }
 
-                // Enroll if needed
                 if (!latestQuest.data?.user_status?.enrolled_at) {
                     const enrolled = await latestQuest.enroll();
                     if (!enrolled) {
@@ -171,7 +212,6 @@ export default class readyEvent extends baseDiscordEvent {
                     this.logger.info(`Quest ${quest.id}: SelfUser enrolled`);
                 }
 
-                // Resume from saved Discord progress
                 const current = latestQuest.data?.user_status?.progress?.[taskName]?.value ?? 0;
                 const target = latestQuest.solveMethod?.target ?? 0;
                 const startPercent = target > 0 ? Math.min(100, Math.floor((current / target) * 100)) : 0;
@@ -191,7 +231,6 @@ export default class readyEvent extends baseDiscordEvent {
                     target
                 );
 
-                // Live progress updates → log + optional console
                 runner.on("progress", ({ current: c, target: t, percent, completed: done }) => {
                     const bar = this.buildProgressBar(percent);
                     if (done) {
@@ -210,11 +249,13 @@ export default class readyEvent extends baseDiscordEvent {
                     runner.run().catch(() => resolve(false));
                 });
 
-                // Remove progress listener to avoid memory leaks on retry
                 runner.removeAllListeners("progress");
 
                 if (success) {
                     this.logger.info(`[Quest] "${questName}" (${taskName}) | ✓ Completed! | ${this.buildProgressBar(100)} (${target}/${target})`);
+                    await selfUser.fetchQuests().catch(() => null);
+                    const completedQuest = selfUser.quests.get(quest.id) ?? quest;
+                    await this.refreshQuestCache(completedQuest).catch(() => null);
                     return true;
                 }
 
@@ -234,10 +275,6 @@ export default class readyEvent extends baseDiscordEvent {
         }
     }
 
-    /**
-     * Kick off completion for ALL available (non-completed) quests on selfUser.
-     * Runs in the background — does NOT block the cron or startup.
-     */
     private startAutoCompleteAll(): void {
         if (!selfUser) return;
 
@@ -246,71 +283,25 @@ export default class readyEvent extends baseDiscordEvent {
             if (completingQuests.has(quest.id)) continue;
 
             const taskName = quest.solveMethod?.id;
-            if (!taskName || !questConfigs.has(taskName)) continue; // only supported quests
+            if (!taskName || !questConfigs.has(taskName)) continue;
 
             this.logger.info(`Auto-queuing quest ${quest.id} (${taskName}) for selfUser completion`);
             this.completeQuestOnSelfUser(quest).catch(() => null);
         }
     }
 
-    /** Build composite: selfUser's circular avatar + decoration overlay */
-    private async buildAvatarWithDecoration(decorationBuffer: Buffer): Promise<Buffer | null> {
-        if (!selfUser) return null;
-        try {
-            const { data } = await selfUser.api.get("/users/@me");
-            const avatarHash = data?.avatar;
-            if (!avatarHash) return null;
+    // ── Notification thumbnail ────────────────────────────────────────────────
 
-            const ext = avatarHash.startsWith("a_") ? "gif" : "png";
-            const avatarUrl = `https://cdn.discordapp.com/avatars/${selfUser.id}/${avatarHash}.${ext}?size=512`;
-
-            const avatarResp = await axios.get(avatarUrl, { responseType: "arraybuffer", timeout: 10000 });
-            let avatarBuffer = Buffer.from(avatarResp.data);
-
-            if (ext === "gif") {
-                avatarBuffer = await sharp(avatarBuffer, { animated: false, pages: 1 }).png().toBuffer();
-            }
-
-            const size = 512;
-            const circularMask = Buffer.from(
-                `<svg width="${size}" height="${size}"><circle cx="${size / 2}" cy="${size / 2}" r="${size / 2}" fill="white"/></svg>`
-            );
-
-            const circularAvatar = await sharp(avatarBuffer)
-                .resize(size, size, { fit: "cover" })
-                .composite([{ input: circularMask, blend: "dest-in" }])
-                .png()
-                .toBuffer();
-
-            const resizedDecoration = await sharp(decorationBuffer)
-                .resize(size, size, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-                .png()
-                .toBuffer();
-
-            return await sharp(circularAvatar)
-                .composite([{ input: resizedDecoration, blend: "over" }])
-                .png()
-                .toBuffer();
-        } catch (err) {
-            this.logger.error("Failed to build avatar+decoration composite:", err);
-            return null;
-        }
-    }
-
-    private async getNotificationThumbnail(quest: Quest, selfCompleted: boolean): Promise<Buffer | null> {
+    private async getNotificationThumbnail(quest: Quest): Promise<Buffer | null> {
         const reward = quest.rewards?.[0];
         if (reward?.type !== RewardType.DiscordDecorations) return null;
 
-        const decorationBuffer = selfUser ? await selfUser.loadQuestDecoration(quest) : null;
+        // Use preloaded decoration from cache if available
+        const cached = this.questAssetsCache.get(quest.id);
+        const decorationBuffer = cached?.decoration ?? (selfUser ? await selfUser.loadQuestDecoration(quest) : null);
+
         if (!decorationBuffer) return null;
-
-        if (!selfCompleted) {
-            this.logger.info(`Exception case for quest ${quest.id}: decoration only (no avatar)`);
-            return decorationBuffer;
-        }
-
-        const composite = await this.buildAvatarWithDecoration(decorationBuffer);
-        return composite ?? decorationBuffer;
+        return decorationBuffer;
     }
 
     private async sendQuestNotification(
@@ -372,12 +363,15 @@ export default class readyEvent extends baseDiscordEvent {
             return;
         }
 
-        // Load quest configs once (needed by SelfUserQuestRunner)
         await this.loadQuestConfigs();
 
-        // ── Initial fetch & auto-complete on startup ──────────────────────
+        // ── Startup: fetch quests then preload decorations & images ──────
         this.logger.info("SelfUser: fetching quests on startup...");
         await selfUser.fetchQuests().catch(() => null);
+
+        // Preload decorations + quest images in the background (non-blocking)
+        this.preloadAllQuestAssets();
+
         this.startAutoCompleteAll();
 
         // ── Cron: every 5 minutes ─────────────────────────────────────────
@@ -390,7 +384,9 @@ export default class readyEvent extends baseDiscordEvent {
             const newQuests = await selfUser.fetchQuests().catch(() => null);
             if (!newQuests) return;
 
-            // Always try to complete any unfinished quests (runs in background)
+            // Preload assets for any new quests immediately (background)
+            this.preloadAllQuestAssets();
+
             this.startAutoCompleteAll();
 
             // ── Notification handling ────────────────────────────────────
@@ -424,7 +420,7 @@ export default class readyEvent extends baseDiscordEvent {
                 }
 
                 const thumbnailBuffer = isDecorationQuest
-                    ? await this.getNotificationThumbnail(quest, selfCompleted)
+                    ? await this.getNotificationThumbnail(quest)
                     : null;
 
                 await this.sendQuestNotification(quest, questDoc, channel, members, thumbnailBuffer);
