@@ -7,7 +7,7 @@ import GuildDocument from "../../entities/guildSettings.js";
 import { EmbedBuilder } from "../../lib/handler/embedBuilder.js";
 
 export default class CheckDm extends SlashCommand {
-    public name = "check-dm";
+    public name = "checkdm";
     public description = "Sends a test DM to verify direct messages are open";
     public options = [
         new SlashCommandUserOption()
@@ -35,7 +35,7 @@ export default class CheckDm extends SlashCommand {
         const dmEmbed = new EmbedBuilder()
             .setTitle("✅ DM Check")
             .setDescription(`Your direct messages are **open**. ${target.toString()}`)
-            .setColor("Green")
+            .setColor("#06c2fb")
             .setTimestamp();
 
         const sent = await target.send({ embeds: [dmEmbed] }).catch(() => null);
@@ -46,10 +46,10 @@ export default class CheckDm extends SlashCommand {
                     new EmbedBuilder()
                         .setDescription(
                             isSelf
-                                ? "✅ **Your DMs are open!**\n-# Check your direct messages — a test message was sent to you."
-                                : `✅ **${target.toString()}'s DMs are open!**\n-# A test message was sent to them.`
+                                ? "✅ **Your DM are open!**\n-# Check your direct message — a test message was sent to you."
+                                : `✅ **${target.toString()}'s DM are open!**\n-# A test message was sent to them.`
                         )
-                        .setColor("Green"),
+                        .setColor("#06c2fb"),
                 ],
             });
         }
@@ -59,10 +59,10 @@ export default class CheckDm extends SlashCommand {
                 new EmbedBuilder()
                     .setDescription(
                         isSelf
-                            ? "❌ **Your DMs are closed.**\n-# To receive notifications, go to **Server Settings → Privacy Settings** and enable **Direct Messages**."
-                            : `❌ **${target.toString()}'s DMs are closed.**\n-# They need to enable **Direct Messages** in their Server Privacy Settings.`
+                            ? "❌ **Your DM are closed.**\n-# To receive notifications, go to **Server Settings → Privacy Settings** and enable **Direct Message**."
+                            : `❌ **${target.toString()}'s DM are closed.**\n-# They need to enable **Direct Message** in their Server Privacy Settings.`
                     )
-                    .setColor("DarkRed"),
+                    .setColor("#06c2fb"),
             ],
         });
     }
