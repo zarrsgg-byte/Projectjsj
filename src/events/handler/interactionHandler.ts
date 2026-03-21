@@ -49,7 +49,8 @@ export default class interactionChatInputHandler extends baseDiscordEvent {
                 } else {
                     await interaction.reply({ embeds: [embed], flags, components: [] });
                 }
-            } catch (err) {
+            } catch (err: any) {
+                if (err?.code === 10062) return;
                 this.logger.error(`Failed to reply to interaction ${interaction.id}:`, err);
             }
         };
@@ -164,7 +165,8 @@ export default class interactionChatInputHandler extends baseDiscordEvent {
                 guildConfig,
             });
             this.logger.info(`Executed command ${commandName} for user ${interaction.user.tag} successfully.`);
-        } catch (err) {
+        } catch (err: any) {
+            if (err?.code === 10062) return;
             this.logger.error(`Failed to execute command ${commandName} for interaction ${interaction.id}:`, err);
             replyInteraction(i18n.t("commandError"), true);
         }
