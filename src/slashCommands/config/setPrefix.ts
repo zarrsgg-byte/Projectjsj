@@ -55,8 +55,8 @@ export default class setprefix extends SlashCommand {
         if (!guildSettings) {
             let doc = await GuildDocumentRepo.findOneBy({ guildId: guild.id }) ?? GuildDocumentRepo.create({ guildId: guild.id });
             await GuildDocumentRepo.save(doc);
-            client.guildSettings.set(guild.id, guildSettings);
-            guildSettings = client.guildSettings.get(guild.id);
+            guildSettings = doc;
+            client.guildSettings.set(guild.id, doc);
         }
         const newPrefix = interaction.options.getString("prefix");
         guildSettings.prefix = newPrefix;
