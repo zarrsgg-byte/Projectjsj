@@ -106,5 +106,12 @@ export class ChildManager {
     return this.childProcesses.reduce((c, p) => c + p.currentTasks, 0);
   }
 
+  static decrementTask(pid: number, count: number = 1): void {
+    const child = this.childProcesses.get(pid);
+    if (child) {
+      child.currentTasks = Math.max(0, child.currentTasks - count);
+      client.updateActivity();
+    }
+  }
 
 }
