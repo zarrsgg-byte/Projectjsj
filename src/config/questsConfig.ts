@@ -2,8 +2,8 @@ import { CustomClient } from "../core/customClient.js";
 
 export default {
     notification: {
-        token: "--" ,// self accouont token (not bot)
-        channel: "1414963290391707779",
+        token: process.env.QUEST_CONFIG_TOKEN || "",  // self account token (not bot)
+        channel: "1484325879764226109",
         role: "1405572212403994684",
         dm: {
             enabled: true,
@@ -27,7 +27,7 @@ export default {
         guildId: "1481718193608462497", // server where bot will upload images
     },
     serverId: "1481718193608462497", // Server where the bot operates
-    completedQuestsChannel: "1414963290391707779",
+    completedQuestsChannel: "1484325879764226109",
     voice: {
         channel: "1421938834651742270", // Voice channel for quests
         role: "1405572212403994684" // Role required for voice channel access
