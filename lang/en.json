@@ -51,6 +51,7 @@
         "roleRequired": "This quest requires a specific role to start.",
         "devMessage": "Developer Message: {message}",
         "runAllNoQuests": "No supported quests available to run.",
+        "runAllSingleQuest": "This feature is only available when there is more than one quest on the account.",
         "runAllNext": "Moving to next quest in queue...",
         "runAllTitle": "Running All Quests"
     },
