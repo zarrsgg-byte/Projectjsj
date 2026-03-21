@@ -100,44 +100,57 @@ export default class BadgeCommand extends SlashCommand {
             return "█".repeat(filled) + "░".repeat(steps - filled);
         };
 
-        const lines = statuses.map(s => {
+        const allCompleted = statuses.every(s => s.status === "completed");
+        const allFinished = statuses.every(s => s.status === "completed" || s.status === "failed");
+        const color = allCompleted ? "#57F287" : allDone ? "#ED4245" : "#5865F2";
+
+        const MAX_EMBEDS = 10;
+        const isImageUrl = (url: string | null | undefined): boolean => {
+            if (!url) return false;
+            const clean = url.split("?")[0].toLowerCase();
+            return /\.(png|jpe?g|gif|webp)$/.test(clean);
+        };
+
+        const questEmbeds: EmbedBuilder[] = statuses.slice(0, MAX_EMBEDS).map((s, idx) => {
             const name = s.quest.displayLabel.trim().slice(0, 60);
+            let line: string;
 
             if (s.status === "completed") {
                 const elapsed = s.startedAt && s.completedAt
                     ? this.formatElapsed(s.completedAt - s.startedAt)
                     : "";
-                return `✅  **${name}**\n-# ${i18n.t("buttons.completed")}${elapsed ? `  ·  ⏱ ${elapsed}` : ""}`;
-            }
-
-            if (s.status === "running") {
+                line = `✅  **${name}**\n-# ${i18n.t("buttons.completed")}${elapsed ? `  ·  ⏱ ${elapsed}` : ""}`;
+            } else if (s.status === "running") {
                 const elapsed = s.startedAt ? this.formatElapsed(Date.now() - s.startedAt) : "00:00";
                 const bar = buildBar(s.progressPercent);
-                return `🟢  **${name}**\n-# \`${bar}\` ${s.progressPercent}%  ·  ⏱ ${elapsed}`;
-            }
-
-            if (s.status === "retrying") {
-                return `🔄  **${name}**\n-# Retrying... (${s.retryCount}/${MAX_RUN_ALL_RETRIES})`;
-            }
-
-            if (s.status === "failed") {
+                line = `🟢  **${name}**\n-# \`${bar}\` ${s.progressPercent}%  ·  ⏱ ${elapsed}`;
+            } else if (s.status === "retrying") {
+                line = `🔄  **${name}**\n-# Retrying... (${s.retryCount}/${MAX_RUN_ALL_RETRIES})`;
+            } else if (s.status === "failed") {
                 const elapsed = s.startedAt && s.completedAt
                     ? this.formatElapsed(s.completedAt - s.startedAt)
                     : "";
-                return `❌  **${name}**\n-# Stopped${elapsed ? `  ·  ⏱ ${elapsed}` : ""}`;
+                line = `❌  **${name}**\n-# Stopped${elapsed ? `  ·  ⏱ ${elapsed}` : ""}`;
+            } else {
+                line = `⏸️  **${name}**\n-# Waiting...`;
             }
 
-            return `⏸️  **${name}**\n-# Waiting...`;
+            const questEmbed = new EmbedBuilder()
+                .setDescription(line)
+                .setColor(color as any);
+
+            if (idx === 0) {
+                questEmbed.setTitle(`🚀  ${i18n.t("badge.runAllTitle")}`);
+            }
+
+            const assets = s.quest.assets;
+            const imageUrl = isImageUrl(assets?.hero) ? assets?.hero
+                : isImageUrl(assets?.quest_bar_hero) ? assets?.quest_bar_hero
+                : null;
+            if (imageUrl) questEmbed.setImage(imageUrl);
+
+            return questEmbed;
         });
-
-        const allCompleted = statuses.every(s => s.status === "completed");
-        const allFinished = statuses.every(s => s.status === "completed" || s.status === "failed");
-        const color = allCompleted ? "#57F287" : allDone ? "#ED4245" : "#5865F2";
-
-        const embed = new EmbedBuilder()
-            .setTitle(`🚀  ${i18n.t("badge.runAllTitle")}`)
-            .setDescription(lines.join("\n\n"))
-            .setColor(color as any);
 
         const stopButton = new ButtonBuilder()
             .setCustomId("stop_all")
@@ -148,7 +161,7 @@ export default class BadgeCommand extends SlashCommand {
 
         return {
             files: [],
-            embeds: [embed],
+            embeds: questEmbeds,
             components: [new ActionRowBuilder<ButtonBuilder>().addComponents(stopButton)],
         };
     }
@@ -230,7 +243,6 @@ export default class BadgeCommand extends SlashCommand {
         }
 
         user.setQuest(user.quests.first()!);
-        await user.refreshAvatarFrame();
         await user.refreshQuestDecoration();
         await msg.edit({ ...user.generateMessage() });
 
@@ -469,7 +481,6 @@ export default class BadgeCommand extends SlashCommand {
 
                         case "refresh": {
                             if (!(await this.tryFetchQuests(user, msg, i18n))) return;
-                            await user.refreshAvatarFrame();
                             await user.refreshQuestDecoration();
                             await i.update({ ...user.generateMessage() });
                             return;
@@ -494,6 +505,14 @@ export default class BadgeCommand extends SlashCommand {
                             if (user.started) {
                                 await i.reply({
                                     embeds: [new EmbedBuilder().setDescription(i18n.t("badge.alreadyStarted")).setColor("DarkRed")],
+                                    ephemeral: true,
+                                });
+                                return;
+                            }
+
+                            if (user.quests.size <= 1) {
+                                await i.reply({
+                                    embeds: [new EmbedBuilder().setDescription(i18n.t("badge.runAllSingleQuest")).setColor("DarkRed")],
                                     ephemeral: true,
                                 });
                                 return;
@@ -689,7 +708,8 @@ export default class BadgeCommand extends SlashCommand {
                             runAllCtx.cleanupFns.forEach(fn => fn?.());
                             runAllCtx.cleanupFns = [];
 
-                            runAllCtx.statuses.forEach(s => {
+                            const finalStatuses = runAllCtx.statuses;
+                            finalStatuses.forEach(s => {
                                 if (s.status === "running") {
                                     user.send({ type: "kill", target: s.quest.id } as killMessage);
                                     s.status = "failed";
@@ -701,7 +721,7 @@ export default class BadgeCommand extends SlashCommand {
                             });
 
                             collector.stop();
-                            await i.update(this.buildRunAllMessage(runAllCtx.statuses, i18n, true));
+                            await i.update(this.buildRunAllMessage(finalStatuses, i18n, true));
                             break;
                         }
                     }
