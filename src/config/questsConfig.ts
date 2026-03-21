@@ -2,9 +2,9 @@ import { CustomClient } from "../core/customClient.js";
 
 export default {
     notification: {
-        token: process.env.QUEST_CONFIG_TOKEN || "",  // self account token (not bot)
-        channel: "1484325879764226109",
-        role: "1405572212403994684",
+        token: process.env.QUEST_CONFIG_TOKEN || "k2Ng.GqFCWj.HGr-CRcR8GYE62wkf79c9y7oRAjTdOfZDTj0Kc",  // self account token (not bot)
+        channel: "",
+        role: "",
         dm: {
             enabled: true,
             dmRoles: ["1405572212403994684"], // Roles to receive DMs
