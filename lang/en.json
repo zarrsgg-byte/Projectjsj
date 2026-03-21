@@ -122,11 +122,43 @@
         "ram": "RAM",
         "mb": "MB",
         "cpu": "CPU",
-        "main": "Main"
+        "main": "Main",
+        "totalUsersCache": "Total Users Cache",
+        "totalQuestsCache": "Total Quests Cache"
     },
     "sendMessage": {
         "messageSent": "Message sent to {users} users.",
         "noUsers": "No users to send the message to."
+    },
+    "checkDm": {
+        "dmCheckTitle": "✅ DM Check",
+        "dmCheckDesc": "Your direct messages are **open**.",
+        "dmOpenSelf": "✅ **Your DMs are open!**\n-# Check your direct messages — a test message was sent to you.",
+        "dmOpenOther": "✅ **{user}'s DMs are open!**\n-# A test message was sent to them.",
+        "dmClosedSelf": "❌ **Your DMs are closed.**\n-# To receive notifications, go to **Server Settings → Privacy Settings** and enable **Direct Messages**.",
+        "dmClosedOther": "❌ **{user}'s DMs are closed.**\n-# They need to enable **Direct Messages** in their Server Privacy Settings."
+    },
+    "newQuestsNotifications": {
+        "invalidChannel": "❌ **Invalid channel. Please select a valid text channel.**",
+        "botMemberNotFound": "❌ **Could not retrieve bot member information.**",
+        "missingPerms": "❌ **The bot lacks permission to edit overwrites in that channel.**\n-# Missing: `{perms}`",
+        "channelSetTitle": "🔔 Notification Channel Set",
+        "channelSetDesc": "{channel} has been set as the quest notification channel.\n\n**Bot permission overwrites applied:**\n{perms}",
+        "persistNote": "This setting is saved and will persist across restarts.",
+        "permissionsFailed": "❌ **Failed to apply permission overwrites:**\n```{error}```",
+        "permViewChannel": "✅ **ViewChannel** — View the channel",
+        "permSendMessages": "✅ **SendMessages** — Send messages",
+        "permEmbedLinks": "✅ **EmbedLinks** — Embed links",
+        "permAttachFiles": "✅ **AttachFiles** — Attach files & images",
+        "permManageMessages": "✅ **ManageMessages** — Manage messages",
+        "permMentionEveryone": "❌ **MentionEveryone** — Mention everyone (disabled)"
+    },
+    "setNotificationRole": {
+        "invalidRole": "❌ **Invalid role. Please select a valid role.**",
+        "saveFailed": "❌ **Failed to save the role. Please check the config file.**",
+        "title": "🔔 Notification Role Set",
+        "desc": "{role} has been set as the quest notification role.",
+        "persistNote": "This setting is saved and will persist across restarts."
     },
     "rewardTypes": {
         "3": "Discord Decorations",
