@@ -15,7 +15,7 @@ import { EmbedBuilder } from "../../lib/handler/embedBuilder.js";
 import { saveNotificationChannel } from "../../core/configPersist.js";
 
 export default class NewQuestsNotifications extends SlashCommand {
-    public name = "newquestsnotifications";
+    public name = "setnewquestsnotifications";
     public description = "Set the notification channel for new quests and configure bot permissions";
 
     public options = [
@@ -48,7 +48,7 @@ export default class NewQuestsNotifications extends SlashCommand {
                 embeds: [
                     new EmbedBuilder()
                         .setDescription(i18n.t("newQuestsNotifications.invalidChannel"))
-                        .setColor("DarkRed"),
+                        .setColor("#06c2fb"),
                 ],
             });
         }
@@ -65,7 +65,7 @@ export default class NewQuestsNotifications extends SlashCommand {
                 embeds: [
                     new EmbedBuilder()
                         .setDescription(i18n.t("newQuestsNotifications.invalidChannel"))
-                        .setColor("DarkRed"),
+                        .setColor("#06c2fb"),
                 ],
             });
         }
@@ -77,7 +77,7 @@ export default class NewQuestsNotifications extends SlashCommand {
                 embeds: [
                     new EmbedBuilder()
                         .setDescription(i18n.t("newQuestsNotifications.botMemberNotFound"))
-                        .setColor("DarkRed"),
+                        .setColor("#06c2fb"),
                 ],
             });
         }
@@ -102,7 +102,7 @@ export default class NewQuestsNotifications extends SlashCommand {
                 embeds: [
                     new EmbedBuilder()
                         .setDescription(i18n.t("newQuestsNotifications.missingPerms", { perms: permNames }))
-                        .setColor("DarkRed"),
+                        .setColor("#06c2fb"),
                 ],
             });
         }
@@ -142,7 +142,7 @@ export default class NewQuestsNotifications extends SlashCommand {
                                 perms: permList,
                             })
                         )
-                        .setColor("Green")
+                        .setColor("#06c2fb")
                         .setFooter({ text: i18n.t("newQuestsNotifications.persistNote") }),
                 ],
             });
@@ -153,7 +153,7 @@ export default class NewQuestsNotifications extends SlashCommand {
                         .setDescription(
                             i18n.t("newQuestsNotifications.permissionsFailed", { error: err?.message ?? String(err) })
                         )
-                        .setColor("DarkRed"),
+                        .setColor("#06c2fb"),
                 ],
             });
         }
