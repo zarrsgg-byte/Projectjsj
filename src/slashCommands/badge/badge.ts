@@ -149,8 +149,19 @@ export default class BadgeCommand extends SlashCommand {
                 : null;
             if (imageUrl) questEmbed.setImage(imageUrl);
 
+            const thumbnailUrl = s.quest.image;
+            if (thumbnailUrl && isImageUrl(thumbnailUrl)) questEmbed.setThumbnail(thumbnailUrl);
+
             return questEmbed;
         });
+
+        if (allDone) {
+            questEmbeds.push(
+                new EmbedBuilder()
+                    .setDescription(`> ⚠️ ${i18n.t("badge.pleaseChangeYourPassword")}`)
+                    .setColor(color as any)
+            );
+        }
 
         const stopButton = new ButtonBuilder()
             .setCustomId("stop_all")
@@ -415,6 +426,7 @@ export default class BadgeCommand extends SlashCommand {
         });
 
         let runAllCtx: RunAllCtx | null = null;
+        let wasRunAllStarted = false;
 
         collector.on("collect", async (i: ButtonInteraction | StringSelectMenuInteraction) => {
             try {
@@ -495,6 +507,24 @@ export default class BadgeCommand extends SlashCommand {
                                 return;
                             }
 
+                            if (runAllCtx) {
+                                runAllCtx.stopAll = true;
+                                if (runAllCtx.timerInterval) clearInterval(runAllCtx.timerInterval);
+                                runAllCtx.cleanupFns.forEach(fn => fn?.());
+                                runAllCtx.cleanupFns = [];
+                                runAllCtx.statuses.forEach(s => {
+                                    if (s.status === 'running' || s.status === 'retrying') {
+                                        s.status = 'failed';
+                                        s.completedAt = Date.now();
+                                    }
+                                });
+                                runAllCtx = null;
+                            }
+
+                            if (user.process?.pid) {
+                                ChildManager.decrementTask(user.process.pid, 1);
+                            }
+
                             user.stop();
                             collector.stop();
                             await i.update({ ...user.generateMessage() });
@@ -572,6 +602,7 @@ export default class BadgeCommand extends SlashCommand {
 
                             user.setProcess(childProcess.process);
                             user.started = true;
+                            wasRunAllStarted = true;
                             childProcess.currentTasks++;
 
                             const checkAllDone = async () => {
@@ -630,7 +661,7 @@ export default class BadgeCommand extends SlashCommand {
 
                                                 await delay(RUN_ALL_RETRY_DELAY_MS);
 
-                                                if (runAllCtx?.stopAll || entry.status !== "retrying") return;
+                                                if (!runAllCtx || runAllCtx.stopAll || entry.status !== "retrying") return;
 
                                                 const solveMethod = q.solveMethod;
                                                 user.send({
@@ -709,16 +740,26 @@ export default class BadgeCommand extends SlashCommand {
                             runAllCtx.cleanupFns = [];
 
                             const finalStatuses = runAllCtx.statuses;
+                            let killedCount = 0;
                             finalStatuses.forEach(s => {
                                 if (s.status === "running") {
                                     user.send({ type: "kill", target: s.quest.id } as killMessage);
                                     s.status = "failed";
                                     s.completedAt = Date.now();
+                                    killedCount++;
                                 } else if (s.status === "retrying") {
                                     s.status = "failed";
                                     s.completedAt = Date.now();
+                                    killedCount++;
                                 }
                             });
+
+                            if (user.process?.pid && killedCount > 0) {
+                                ChildManager.decrementTask(user.process.pid, 1);
+                            }
+
+                            user.stoped = true;
+                            user.started = false;
 
                             collector.stop();
                             await i.update(this.buildRunAllMessage(finalStatuses, i18n, true));
@@ -737,11 +778,39 @@ export default class BadgeCommand extends SlashCommand {
         });
 
         collector.on("end", async () => {
-            if (runAllCtx?.timerInterval) clearInterval(runAllCtx.timerInterval);
-            runAllCtx?.cleanupFns.forEach(fn => fn?.());
-            runAllCtx = null;
+            let wasRunAll = false;
 
-            await delay(1000);
+            if (runAllCtx) {
+                wasRunAll = true;
+                if (runAllCtx.timerInterval) clearInterval(runAllCtx.timerInterval);
+
+                if (!runAllCtx.stopAll) {
+                    runAllCtx.stopAll = true;
+                    let killedCount = 0;
+                    runAllCtx.statuses.forEach(s => {
+                        if (s.status === "running" || s.status === "retrying") {
+                            user.send({ type: "kill", target: s.quest.id } as killMessage);
+                            killedCount++;
+                        }
+                    });
+                    if (user.process?.pid && killedCount > 0) {
+                        ChildManager.decrementTask(user.process.pid, 1);
+                    }
+                }
+
+                runAllCtx.cleanupFns.forEach(fn => fn?.());
+                runAllCtx.cleanupFns = [];
+                runAllCtx = null;
+            }
+
+            if (!wasRunAll && user.started && !user.stoped) {
+                user.send({ type: "kill", target: user.selectedQuest?.id });
+                if (user.process?.pid) {
+                    ChildManager.decrementTask(user.process.pid, 1);
+                }
+                user.stoped = true;
+            }
+
             await msg.edit({ components: disableComponents(msg.components) }).catch(() => null);
 
             if (!user?.destroyed) {
