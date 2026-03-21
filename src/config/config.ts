@@ -5,7 +5,7 @@ dotenvConfig();
 
 
 export default {
-    token: 'MTQ4MTcxNzg4MzE4MzY5Mzg2NA.GS8g7e.wZj-XsdQHQBt6FJ38fxfz6dNeUZgRJClhdJ5UM',
+    token: process.env.DISCORD_TOKEN || '',
     embedColor: "#06c2fb",
     defaultLanguage: "en",
     debugMode: true,
