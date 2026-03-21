@@ -12,8 +12,7 @@ import { permissionList } from "../../lib/handler/messageCommand.js";
 import { I18nInstance } from "../../core/i18n.js";
 import GuildDocument from "../../entities/guildSettings.js";
 import { EmbedBuilder } from "../../lib/handler/embedBuilder.js";
-import questsConfig from "../../config/questsConfig.js";
-import { saveConfigOverride } from "../../core/configPersist.js";
+import { saveNotificationChannel } from "../../core/configPersist.js";
 
 export default class NewQuestsNotifications extends SlashCommand {
     public name = "newquestsnotifications";
@@ -34,6 +33,7 @@ export default class NewQuestsNotifications extends SlashCommand {
 
     public async execute({
         interaction,
+        i18n,
     }: {
         interaction: ChatInputCommandInteraction;
         client: CustomClient;
@@ -41,26 +41,42 @@ export default class NewQuestsNotifications extends SlashCommand {
         lang: string;
         guildConfig: GuildDocument | null;
     }): Promise<any> {
-        const channel = interaction.options.getChannel("channel", true);
+        const rawChannel = interaction.options.getChannel("channel", true);
 
-        if (!channel || !(channel instanceof TextChannel)) {
+        if (!rawChannel) {
             return interaction.editReply({
                 embeds: [
                     new EmbedBuilder()
-                        .setDescription("❌ **Invalid channel. Please select a valid text channel.**")
+                        .setDescription(i18n.t("newQuestsNotifications.invalidChannel"))
                         .setColor("DarkRed"),
                 ],
             });
         }
 
+        // Fetch the full channel object from guild to ensure it's not partial
         const guild = interaction.guild!;
+        const channel = await guild.channels.fetch(rawChannel.id).catch(() => null) as TextChannel | null;
+
+        if (
+            !channel ||
+            (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.GuildAnnouncement)
+        ) {
+            return interaction.editReply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setDescription(i18n.t("newQuestsNotifications.invalidChannel"))
+                        .setColor("DarkRed"),
+                ],
+            });
+        }
+
         const botMember = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
 
         if (!botMember) {
             return interaction.editReply({
                 embeds: [
                     new EmbedBuilder()
-                        .setDescription("❌ **Could not retrieve bot member information.**")
+                        .setDescription(i18n.t("newQuestsNotifications.botMemberNotFound"))
                         .setColor("DarkRed"),
                 ],
             });
@@ -85,9 +101,7 @@ export default class NewQuestsNotifications extends SlashCommand {
             return interaction.editReply({
                 embeds: [
                     new EmbedBuilder()
-                        .setDescription(
-                            `❌ **The bot lacks permission to edit overwrites in that channel.**\n-# Missing: \`${permNames}\``
-                        )
+                        .setDescription(i18n.t("newQuestsNotifications.missingPerms", { perms: permNames }))
                         .setColor("DarkRed"),
                 ],
             });
@@ -107,34 +121,38 @@ export default class NewQuestsNotifications extends SlashCommand {
                 { type: OverwriteType.Member }
             );
 
-            questsConfig.notification.channel = channel.id;
-            saveConfigOverride({ notificationChannel: channel.id });
+            saveNotificationChannel(channel.id);
 
             const permList = [
-                "✅ **ViewChannel** — View the channel",
-                "✅ **SendMessages** — Send messages",
-                "✅ **EmbedLinks** — Embed links",
-                "✅ **AttachFiles** — Attach files & images",
-                "✅ **ManageMessages** — Manage messages",
-                "❌ **MentionEveryone** — Mention everyone (disabled)",
+                i18n.t("newQuestsNotifications.permViewChannel"),
+                i18n.t("newQuestsNotifications.permSendMessages"),
+                i18n.t("newQuestsNotifications.permEmbedLinks"),
+                i18n.t("newQuestsNotifications.permAttachFiles"),
+                i18n.t("newQuestsNotifications.permManageMessages"),
+                i18n.t("newQuestsNotifications.permMentionEveryone"),
             ].join("\n");
 
             return interaction.editReply({
                 embeds: [
                     new EmbedBuilder()
-                        .setTitle("🔔 Notification Channel Set")
+                        .setTitle(i18n.t("newQuestsNotifications.channelSetTitle"))
                         .setDescription(
-                            `${channel} has been set as the quest notification channel.\n\n**Bot permission overwrites applied:**\n${permList}`
+                            i18n.t("newQuestsNotifications.channelSetDesc", {
+                                channel: channel.toString(),
+                                perms: permList,
+                            })
                         )
                         .setColor("Green")
-                        .setFooter({ text: "This setting is saved and will persist across restarts." }),
+                        .setFooter({ text: i18n.t("newQuestsNotifications.persistNote") }),
                 ],
             });
         } catch (err: any) {
             return interaction.editReply({
                 embeds: [
                     new EmbedBuilder()
-                        .setDescription(`❌ **Failed to apply permission overwrites:**\n\`\`\`${err?.message ?? err}\`\`\``)
+                        .setDescription(
+                            i18n.t("newQuestsNotifications.permissionsFailed", { error: err?.message ?? String(err) })
+                        )
                         .setColor("DarkRed"),
                 ],
             });
