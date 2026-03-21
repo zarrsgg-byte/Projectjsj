@@ -353,53 +353,74 @@ export class Quest {
         const image = quest.image;
 
 
+        const heroImage  = quest.assets?.hero ?? null;
+        const gameTitle  = quest.data.config.messages.game_title;
+        const questTitle = quest.data.config.messages.quest_name;
+        const color      = `#${quest.data.config.colors.primary.replace('#', '')}`;
+        const appName    = quest.data.config.application.name;
+
+        const startsTs  = new Date(quest.startsAt).getTime();
+        const expiresTs = expiresAt ? new Date(expiresAt).getTime() : null;
+
+        const timeSection = [
+            `> 📅 **${i18n.t('message.startsAT')}:** ${formatDiscordTimestamp(startsTs, 'Date')} — ${formatDiscordTimestamp(startsTs, 'R')}`,
+            expiresTs
+                ? `> ⏳ **${i18n.t('message.expiresAt')}:** ${formatDiscordTimestamp(expiresTs, 'Date')} — ${formatDiscordTimestamp(expiresTs, 'R')}`
+                : `> ⏳ **${i18n.t('message.expiresAt')}:** ${i18n.t('message.noExpires')}`,
+        ].join('\n');
+
+        const description = [
+            `### 🎮 ${gameTitle}`,
+            `> ${questTitle}`,
+            '',
+            `### 🎁 ${i18n.t('message.rewards')}`,
+            rewards,
+            '',
+            `### 📋 ${i18n.t('message.tasks')}`,
+            tasks,
+            '',
+            timeSection,
+        ].join('\n');
+
         const embed = new EmbedBuilder()
-            .setTitle(i18n.t("message.newQuest"))
-            .addFields(
-                {
-                    name: `${i18n.t("message.gameName")}:`,
-                    value: `${quest.data.config.messages.game_title}`,
-                    inline: true
-                },
-                {
-                    name: i18n.t("message.questName") + ":",
-                    value: `${quest.data.config.messages.quest_name}`,
-                    inline: true
-                },
-                {
-                    name: i18n.t("message.startsAT") + ":",
-                    value: `${formatDiscordTimestamp(new Date(quest.startsAt).getTime(), "Date")} (${formatDiscordTimestamp(new Date(quest.startsAt).getTime(), "R")})`,
-                    inline: false
-                },
-                {
-                    name: `${i18n.t("message.expiresAt")}` + ":",
-                    value: `${expiresAt ? `${formatDiscordTimestamp(new Date(expiresAt).getTime(), "Date")} (${formatDiscordTimestamp(new Date(expiresAt).getTime(), "R")})` : i18n.t("message.noExpires")}`,
-                    inline: false
-                },
-            )
-
-            .setColor(`#${quest.data.config.colors.primary.replace("#", "")}`)
-
-            .setImage(quest.assets.hero)
-            .setTimestamp(moment(quest.startsAt).toDate())
-            .setFooter({ text: quest.data.config.application.name, iconURL: image ?? undefined })
-            .setDescription(`## ${i18n.t("message.rewards")}: \n${rewards}\n\n## ${i18n.t("message.tasks")}:\n${tasks}`);
-
+            .setColor(color as any)
+            .setDescription(description)
+            .setImage(heroImage)
+            .setTimestamp(new Date())
+            .setFooter({ text: appName, iconURL: image ?? undefined });
 
         if (image) {
             embed.setThumbnail(image);
         }
 
+        const questLink = new ButtonBuilder()
+            .setStyle(ButtonStyle.Link)
+            .setEmoji('🔗')
+            .setLabel(i18n.t('badge.ViewQuest'))
+            .setURL(`https://discord.com/quests/${this.id}`);
 
-        let embeds = [embed];
-        let content = undefined;
-        if (isValidRole) {
-            content = `||<@&${role}>||`
-        };
-        const supportButton = new ButtonBuilder().setEmoji("🤖").setStyle(ButtonStyle.Secondary).setDisabled(!this.isSupported).setCustomId(`supportbot`);
-        const questLink = new ButtonBuilder().setStyle(ButtonStyle.Link).setEmoji("🔗").setLabel(i18n.t("badge.ViewQuest")).setURL(`https://discord.com/quests/${this.id}`);
-        const buttonsRow = new ActionRowBuilder<any>().addComponents(questLink, supportButton);
-        return { embeds: embeds, components: [buttonsRow], content };
+        const supportButton = new ButtonBuilder()
+            .setEmoji('🤖')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(!this.isSupported())
+            .setCustomId('supportbot');
+
+        const extraButtons: ButtonBuilder[] = (questsConfig.buttons ?? []).map(btn =>
+            new ButtonBuilder()
+                .setStyle(ButtonStyle.Link)
+                .setURL(btn.url)
+                .setEmoji(btn.emoji(client) || '🔗')
+                .setLabel(btn.label ?? '')
+        );
+
+        const buttonsRow = new ActionRowBuilder<any>().addComponents(
+            questLink,
+            ...extraButtons,
+            supportButton,
+        );
+
+        const content = isValidRole ? `||<@&${role}>||` : undefined;
+        return { embeds: [embed], components: [buttonsRow], content };
     }
 
 
