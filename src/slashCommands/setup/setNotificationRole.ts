@@ -44,7 +44,7 @@ export default class SetNotificationRole extends SlashCommand {
                 embeds: [
                     new EmbedBuilder()
                         .setDescription(i18n.t("setNotificationRole.invalidRole"))
-                        .setColor("DarkRed"),
+                        .setColor("#06c2fb"),
                 ],
             });
         }
@@ -56,7 +56,7 @@ export default class SetNotificationRole extends SlashCommand {
                 embeds: [
                     new EmbedBuilder()
                         .setDescription(i18n.t("setNotificationRole.saveFailed"))
-                        .setColor("DarkRed"),
+                        .setColor("#06c2fb"),
                 ],
             });
         }
@@ -68,7 +68,7 @@ export default class SetNotificationRole extends SlashCommand {
                     .setDescription(
                         i18n.t("setNotificationRole.desc", { role: role.toString() })
                     )
-                    .setColor("Green")
+                    .setColor("#06c2fb")
                     .setFooter({ text: i18n.t("setNotificationRole.persistNote") }),
             ],
         });
