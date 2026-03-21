@@ -62,10 +62,16 @@ export default class readyEvent extends baseDiscordEvent {
             return null;
         }
 
-        const channel = guild.channels.cache.get(questsConfig.notification.channel)
-            ?? await guild.channels.fetch(questsConfig.notification.channel).catch(() => null);
+        const channelId = questsConfig.notification.channel;
+        if (!channelId || channelId.trim() === "") {
+            this.logger.warn("Notification channel ID is not configured. Quest notifications disabled.");
+            return null;
+        }
 
-        if (!channel?.isTextBased()) {
+        const channel = guild.channels.cache.get(channelId)
+            ?? await guild.channels.fetch(channelId).catch(() => null);
+
+        if (!channel || typeof (channel as any).isTextBased !== "function" || !(channel as any).isTextBased()) {
             this.logger.warn("Notification channel is invalid or not text-based. Quest notifications disabled.");
             return null;
         }
